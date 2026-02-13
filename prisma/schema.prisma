@@ -1,0 +1,113 @@
+// This is your Prisma schema file
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  BUSINESS_ADMIN
+}
+
+enum BusinessStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum PatientSource {
+  MANUAL
+  CSV
+  QR
+}
+
+enum SmsStatus {
+  SENT
+  FAILED
+  QUOTA_BLOCKED
+}
+
+model Business {
+  id                     String   @id @default(uuid())
+  name                   String
+  slug                   String   @unique
+  reviewLink             String   @map("review_link")
+  messageTemplate        String   @default("Hi {{name}}, thank you for visiting {{business_name}}! Please share your feedback: {{link}}") @map("message_template")
+  reminderTemplate       String   @default("Hi {{name}}, we noticed you haven't shared your feedback yet. It would mean a lot to us: {{link}}") @map("reminder_template")
+  sendDelayHours         Int      @default(3) @map("send_delay_hours")
+  reminderDelayHours     Int      @default(24) @map("reminder_delay_hours")
+  maxReminders           Int      @default(2) @map("max_reminders")
+  logoUrl                String?  @map("logo_url")
+  status                 BusinessStatus @default(ACTIVE)
+  smsMonthlyLimit        Int      @default(500) @map("sms_monthly_limit")
+  smsUsedThisMonth       Int      @default(0) @map("sms_used_this_month")
+  maxCsvRowsPerUpload    Int      @default(300) @map("max_csv_rows_per_upload")
+  rateLimitPerMinute     Int      @default(20) @map("rate_limit_per_minute")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  users                  User[]
+  patients               Patient[]
+  smsLogs                SmsLog[]
+
+  @@map("businesses")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  businessId   String?  @map("business_id")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  business     Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("users")
+}
+
+model Patient {
+  id            String         @id @default(uuid())
+  businessId    String         @map("business_id")
+  name          String
+  phone         String?
+  visitDate     DateTime?      @map("visit_date")
+  sendAt        DateTime?      @map("send_at")
+  sentAt        DateTime?      @map("sent_at")
+  openedAt      DateTime?      @map("opened_at")
+  submittedAt   DateTime?      @map("submitted_at")
+  rating        Int?
+  feedback      String?
+  reminderCount Int            @default(0) @map("reminder_count")
+  source        PatientSource
+  createdAt     DateTime       @default(now()) @map("created_at")
+
+  business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  smsLogs       SmsLog[]
+
+  @@index([businessId])
+  @@index([sendAt])
+  @@index([sentAt])
+  @@map("patients")
+}
+
+model SmsLog {
+  id               String    @id @default(uuid())
+  businessId       String    @map("business_id")
+  patientId        String    @map("patient_id")
+  status           SmsStatus
+  providerResponse String?   @map("provider_response")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  business         Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  patient          Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([createdAt])
+  @@map("sms_logs")
+}
