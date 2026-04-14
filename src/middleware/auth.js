@@ -23,7 +23,7 @@ async function authenticate(req, res, next) {
     //   include: { business: true }
     // });
     req.user = {
-      id: decoded.userId,
+      id: decoded.id,
       role: decoded.role,
       businessId: decoded.businessId
     };

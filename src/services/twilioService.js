@@ -4,7 +4,6 @@ class TwilioService {
   constructor() {
     this.isProduction = process.env.NODE_ENV === 'production';
 
-    // Validate env vars only in production
     if (this.isProduction) {
       if (
         !process.env.TWILIO_ACCOUNT_SID ||
@@ -25,26 +24,19 @@ class TwilioService {
 
       console.log('✅ Twilio running in PRODUCTION mode');
     } else {
-      // Development / staging mock
+      // Development / staging — all sends are mocked, nothing hits Twilio
       console.log('🚀 Twilio running in MOCK mode (development)');
       this.mock = true;
     }
   }
 
-  async sendSMS(to, message) {
-    // ✅ MOCK MODE
+  async sendSms(to, message) {
     if (this.mock) {
       console.log('📩 MOCK SMS SENT');
       console.log({ to, message });
-
-      return {
-        success: true,
-        sid: 'mock_sms_' + Date.now(),
-        status: 'sent'
-      };
+      return { success: true, sid: 'mock_sms_' + Date.now(), status: 'sent' };
     }
 
-    // ✅ REAL MODE
     try {
       const result = await this.client.messages.create({
         body: message,
@@ -52,18 +44,10 @@ class TwilioService {
         to
       });
 
-      return {
-        success: true,
-        sid: result.sid,
-        status: result.status
-      };
+      return { success: true, sid: result.sid, status: result.status };
     } catch (error) {
       console.error('❌ Twilio SMS error:', error.message);
-
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -71,39 +55,25 @@ class TwilioService {
     if (this.mock) {
       console.log('📲 MOCK WHATSAPP SENT');
       console.log({ to, message });
-
-      return {
-        success: true,
-        sid: 'mock_wa_' + Date.now(),
-        status: 'sent'
-      };
+      return { success: true, sid: 'mock_wa_' + Date.now(), status: 'sent' };
     }
 
+    // FIX: Removed dead WHATSAPP_DEV_OVERRIDE branch — if not in mock mode we
+    // are in production (constructor enforces this), so always send to the real
+    // recipient number. The old branch was unreachable because this.mock is set
+    // for every non-production environment, meaning we never reached the real
+    // Twilio call except in production.
     try {
-      const toNumber = 
-          process.env.NODE_ENV === "production"  ? 
-              to  : process.env.WHATSAPP_DEV_OVERRIDE;
-
       const result = await this.client.messages.create({
         body: message,
         from: `whatsapp:${this.fromNumber}`,
-        // to: `whatsapp:${to}`
-        to: `whatsapp:${toNumber}`
-
+        to: `whatsapp:${to}`
       });
 
-      return {
-        success: true,
-        sid: result.sid,
-        status: result.status
-      };
+      return { success: true, sid: result.sid, status: result.status };
     } catch (error) {
       console.error('❌ Twilio WhatsApp error:', error.message);
-
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 }

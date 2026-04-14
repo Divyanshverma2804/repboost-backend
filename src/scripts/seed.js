@@ -1,4 +1,4 @@
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
@@ -8,13 +8,15 @@ async function seed() {
 
   try {
     // Create super admin
-    const passwordHash = await bcrypt.hash('admin123', 10);
+    const adminEmail = process.env.INITIAL_ADMIN_EMAIL || 'admin@Rewple.com';
+    const adminPassword = process.env.INITIAL_ADMIN_PASSWORD || 'Admin@123';
+    const passwordHash = await bcrypt.hash(adminPassword, 10);
 
     const superAdmin = await prisma.user.upsert({
-      where: { email: 'admin@example.com' },
+      where: { email: adminEmail },
       update: {},
       create: {
-        email: 'admin@example.com',
+        email: adminEmail,
         passwordHash,
         role: 'SUPER_ADMIN',
         businessId: null
@@ -22,8 +24,8 @@ async function seed() {
     });
 
     console.log('✅ Super admin created:', superAdmin.email);
-    console.log('   Password: admin123');
-    console.log('   Login at: http://localhost:3000/admin/login');
+    console.log('   Password:', adminPassword);
+    console.log('   Login at: /internal/system/admin/login');
 
     // Create a demo business
     const demoBusiness = await prisma.business.upsert({

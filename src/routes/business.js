@@ -89,7 +89,7 @@
 
 //     const visit = new Date(visitDate);
 //     const sendAt = new Date(visit.getTime() + req.business.sendDelayHours * 60 * 60 * 1000);
-     
+
 
 //     console.log("sendDelayHours:", req.business.sendDelayHours);
 //     console.log("visit:", visit);
@@ -426,12 +426,16 @@ const Papa = require('papaparse');
 const QRCode = require('qrcode');
 const prisma = require('../config/database');
 const { authenticate, requireBusinessAdmin } = require('../middleware/auth');
+const { inviteLimiter } = require('../middleware/rateLimiter');
+const { generateReviewReply, analyzeReviews, answerWithContext } = require('../services/aiService');
+const emailService = require('../services/emailService');
+const auditLogService = require('../services/auditLogService');
+const { v4: uuidv4 } = require('uuid');
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 // 🔐 All business routes require authentication
 router.use(authenticate);
-router.use(requireBusinessAdmin);
 
 // --------------------
 // GET /api/business/dashboard
@@ -448,68 +452,85 @@ router.get('/dashboard', async (req, res) => {
       return res.status(404).json({ error: 'Business not found' });
     }
 
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
     const [
-      totalPatients,
+      totalCustomers,
       reviewsReceived,
-      smsCount,
-      avgRating,
-      recentPatients
+      smsSentThisMonth,
+      weeklyReviews
     ] = await Promise.all([
-      prisma.patient.count({ where: { businessId } }),
-      prisma.patient.count({ where: { businessId, submittedAt: { not: null } } }),
-      prisma.smsLog.count({ where: { businessId, status: 'SENT' } }),
-      prisma.patient.aggregate({
-        where: { businessId, rating: { not: null } },
-        _avg: { rating: true }
+      prisma.customer.count({ where: { businessId } }),
+      prisma.customer.count({ where: { businessId, rating: { not: null } } }),
+      prisma.smsLog.count({
+        where: {
+          businessId,
+          createdAt: {
+            gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+          }
+        }
       }),
-      prisma.patient.findMany({
-        where: { businessId },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-        include: { smsLogs: true }
+      prisma.customer.findMany({
+        where: {
+          businessId,
+          submittedAt: { gte: weekAgo },
+          rating: { not: null }
+        },
+        orderBy: { submittedAt: 'desc' },
+        take: 80,
+        select: { feedback: true, rating: true, submittedAt: true }
       })
     ]);
+
+    const recentCustomers = await prisma.customer.findMany({
+      where: { businessId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      include: { smsLogs: { orderBy: { createdAt: 'desc' }, take: 1 } }
+    });
+
+    const weeklySummary = await analyzeReviews(weeklyReviews, business.name);
 
     res.json({
       business,
       stats: {
-        totalPatients,
-        smsSent: business.smsUsedThisMonth,
+        totalCustomers,
         reviewsReceived,
-        smsCount,
-        quotaRemaining: business.smsMonthlyLimit - business.smsUsedThisMonth,
-        avgRating: avgRating._avg.rating || 0
+        smsSent: smsSentThisMonth,
+        smsSentThisMonth,
+        smsMonthlyLimit: business.smsMonthlyLimit
       },
-      recentPatients
+      weeklySummary,
+      recentCustomers
     });
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ error: 'Failed to load dashboard' });
+    res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 });
 
 // --------------------
-// GET /api/business/patients
+// GET /api/business/customers
 // --------------------
-router.get('/patients', async (req, res) => {
+router.get('/customers', async (req, res) => {
   try {
     const businessId = req.user.businessId;
     const page = parseInt(req.query.page) || 1;
     const limit = 50;
     const skip = (page - 1) * limit;
 
-    const [patients, total] = await Promise.all([
-      prisma.patient.findMany({
+    const [customers, total] = await Promise.all([
+      prisma.customer.findMany({
         where: { businessId },
         orderBy: { createdAt: 'desc' },
         take: limit,
         skip
       }),
-      prisma.patient.count({ where: { businessId } })
+      prisma.customer.count({ where: { businessId } })
     ]);
 
     res.json({
-      patients,
+      customers,
       pagination: {
         page,
         totalPages: Math.ceil(total / limit),
@@ -517,15 +538,51 @@ router.get('/patients', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('List patients error:', error);
-    res.status(500).json({ error: 'Failed to fetch patients' });
+    console.error('List customers error:', error);
+    res.status(500).json({ error: 'Failed to fetch customers' });
   }
 });
 
 // --------------------
-// POST /api/business/patients
+// POST /api/business/customers/:id/generate-ai-reply
 // --------------------
-router.post('/patients', async (req, res) => {
+router.post('/customers/:id/generate-ai-reply', async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { id } = req.params;
+
+    const customer = await prisma.customer.findFirst({
+      where: { id, businessId },
+      include: { business: true }
+    });
+
+    if (!customer) {
+      return res.status(404).json({ error: 'Customer not found' });
+    }
+
+    if (!customer.feedback) {
+      return res.status(400).json({ error: 'No feedback found for this customer' });
+    }
+
+    const aiReply = await generateReviewReply(customer.feedback, customer.business.name);
+
+    // Save the AI reply to the database
+    const updatedCustomer = await prisma.customer.update({
+      where: { id },
+      data: { aiReply }
+    });
+
+    res.json({ aiReply: updatedCustomer.aiReply });
+  } catch (error) {
+    console.error('Generate AI reply error:', error);
+    res.status(500).json({ error: 'Failed to generate AI reply' });
+  }
+});
+
+// --------------------
+// POST /api/business/customers
+// --------------------
+router.post('/customers', async (req, res) => {
   try {
     const businessId = req.user.businessId;
     const { name, phone, visitDate } = req.body;
@@ -540,7 +597,7 @@ router.post('/patients', async (req, res) => {
       visit.getTime() + business.sendDelayHours * 60 * 60 * 1000
     );
 
-    const patient = await prisma.patient.create({
+    const customer = await prisma.customer.create({
       data: {
         businessId,
         name,
@@ -551,10 +608,10 @@ router.post('/patients', async (req, res) => {
       }
     });
 
-    res.json(patient);
+    res.json(customer);
   } catch (error) {
-    console.error('Add patient error:', error);
-    res.status(500).json({ error: 'Failed to add patient' });
+    console.error('Add customer error:', error);
+    res.status(500).json({ error: 'Failed to add customer' });
   }
 });
 
@@ -608,7 +665,7 @@ router.post('/upload-csv', upload.single('csvFile'), async (req, res) => {
         const randomDelayMs =
           (Math.floor(Math.random() * 10) + 1) * 60 * 60 * 1000;
 
-        await prisma.patient.create({
+        await prisma.customer.create({
           data: {
             businessId,
             name,
@@ -652,7 +709,7 @@ router.get('/qr-code', async (req, res) => {
     res.json({
       quickReviewUrl,
       qrCodeDataUrl,
-      slug: business.slug,   
+      slug: business.slug,
       businessName: business.name
     });
 
@@ -665,12 +722,15 @@ router.get('/qr-code', async (req, res) => {
 // --------------------
 // GET /api/business/settings
 // --------------------
-router.get('/settings', async (req, res) => {
-  const business = await prisma.business.findUnique({
-    where: { id: req.user.businessId }
-  });
-
-  res.json(business);
+router.get('/settings', requireBusinessAdmin, async (req, res) => {
+  try {
+    const business = await prisma.business.findUnique({
+      where: { id: req.user.businessId }
+    });
+    res.json(business);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
 });
 
 // --------------------
@@ -678,7 +738,7 @@ router.get('/settings', async (req, res) => {
 // --------------------
 const { updateBusinessSettingsSchema } = require('../validations/business.validation');
 
-router.put('/settings', async (req, res) => {
+router.put('/settings', requireBusinessAdmin, async (req, res) => {
   try {
     const parsedData = updateBusinessSettingsSchema.parse(req.body);
 
@@ -687,9 +747,246 @@ router.put('/settings', async (req, res) => {
       data: parsedData
     });
 
+    await auditLogService.log('BUSINESS_SETTINGS_UPDATE', req.user.id, { businessId: req.user.businessId });
+
     res.json(business);
   } catch (error) {
+    if (error?.issues || error?.name === 'ZodError') {
+      console.error('Validation error:', JSON.stringify(error.issues || error, null, 2));
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: error.issues || error.message
+      });
+    }
+    console.error('Update settings error:', error);
     res.status(500).json({ error: 'Failed to update settings' });
+  }
+});
+
+// --------------------
+// Team Management Routes
+// --------------------
+
+// GET /api/business/team - List team members
+router.get('/team', requireBusinessAdmin, async (req, res) => {
+  try {
+    const team = await prisma.user.findMany({
+      where: { businessId: req.user.businessId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        createdAt: true
+      }
+    });
+    res.json(team);
+  } catch (error) {
+    console.error('List team error:', error);
+    res.status(500).json({ error: 'Failed to fetch team members' });
+  }
+});
+
+// POST /api/business/team - Invite/Add team member
+const bcrypt = require('bcryptjs');
+const authService = require('../services/authService');
+
+router.post('/team', requireBusinessAdmin, inviteLimiter, async (req, res) => {
+  try {
+    const { email, role } = req.body;
+
+    if (!email || !role) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
+
+    const { user: newUser, resetToken } = await authService.initiateBusinessOnboarding(email, req.user.businessId);
+    const inviteLink = `${process.env.APP_URL}/set-password/${resetToken}`;
+
+    if (role === 'BUSINESS_MEMBER' || role === 'BUSINESS_ADMIN') {
+      await prisma.user.update({
+        where: { id: newUser.id },
+        data: { role }
+      });
+    }
+
+    await auditLogService.log('TEAM_MEMBER_INVITE', req.user.id, { invitedUserId: newUser.id, email, role });
+
+    try {
+      const business = await prisma.business.findUnique({ where: { id: req.user.businessId } });
+      await emailService.sendTemplate(
+        email,
+        'invitation',
+        "You've been invited to join {{businessName}} on Rewple",
+        {
+          businessName: business?.name || 'your business',
+          link: inviteLink,
+          expiresIn: '7 days',
+          year: String(new Date().getFullYear())
+        }
+      );
+    } catch (err) {
+      console.error('Team invitation email failed:', err);
+    }
+
+    res.json({
+      id: newUser.id,
+      email: newUser.email,
+      role,
+      createdAt: newUser.createdAt,
+      inviteLink
+    });
+  } catch (error) {
+    console.error('Add team member error:', error);
+    res.status(500).json({ error: 'Failed to add team member' });
+  }
+});
+
+// DELETE /api/business/team/:id - Remove team member
+router.delete('/team/:id', requireBusinessAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot remove yourself' });
+    }
+
+    await prisma.user.delete({
+      where: { id, businessId: req.user.businessId }
+    });
+
+    await auditLogService.log('TEAM_MEMBER_DELETE', req.user.id, { deletedUserId: id });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete team member error:', error);
+    res.status(500).json({ error: 'Failed to remove team member' });
+  }
+});
+
+// --------------------
+// POST /api/business/ai/ask
+// --------------------
+router.post('/ai/ask', requireBusinessAdmin, async (req, res) => {
+  try {
+    const { question } = req.body;
+    if (!question || !question.trim()) {
+      return res.status(400).json({ error: 'Question is required' });
+    }
+
+    const business = await prisma.business.findUnique({
+      where: { id: req.user.businessId },
+      select: { id: true, name: true }
+    });
+
+    const feedbackSamples = await prisma.customer.findMany({
+      where: { businessId: business.id, OR: [{ submittedAt: { not: null } }, { rating: { not: null } }] },
+      orderBy: { submittedAt: 'desc' },
+      take: 50,
+      select: { rating: true, feedback: true, submittedAt: true, createdAt: true }
+    });
+
+    const answer = await answerWithContext(feedbackSamples, question, business.name);
+    res.json({ answer });
+  } catch (error) {
+    console.error('AI ask error:', error);
+    res.status(500).json({ error: 'Failed to generate AI insights' });
+  }
+});
+
+// --------------------
+// Support requests: Business -> SuperAdmin
+// --------------------
+router.post('/support', requireBusinessAdmin, async (req, res) => {
+  try {
+    const { type, subject, message } = req.body;
+    if (!type || !subject || !message) {
+      return res.status(400).json({ error: 'type, subject and message are required' });
+    }
+
+    const supportId = uuidv4();
+    let support;
+    try {
+      const rows = await prisma.$queryRaw`
+        INSERT INTO "support_requests" ("id","business_id","user_id","type","subject","message","status","created_at","updated_at")
+        VALUES (${supportId}, ${req.user.businessId}, ${req.user.id}, ${type}, ${subject}, ${message}, 'OPEN', now(), now())
+        RETURNING
+          "id",
+          "business_id" as "businessId",
+          "user_id" as "userId",
+          "type",
+          "subject",
+          "message",
+          "status",
+          "created_at" as "createdAt",
+          "updated_at" as "updatedAt";
+      `;
+      support = rows?.[0];
+    } catch (err) {
+      console.error('Support insert failed:', err);
+      return res.status(503).json({ error: 'Support system not initialized. Please apply DB schema changes and restart.' });
+    }
+
+    const business = await prisma.business.findUnique({ where: { id: req.user.businessId } });
+    const to = process.env.PLATFORM_SUPPORT_EMAIL || process.env.SUPPORT_EMAIL || process.env.ADMIN_EMAIL;
+    if (to) {
+      const emailSubject = `[Rewple Support] ${type} — ${business?.name || 'Unknown Business'}`;
+      const emailBody =
+`A new support request has been submitted.
+
+Business: ${business?.name || 'N/A'}
+Business ID: ${req.user.businessId}
+From: ${req.user.id}
+Type: ${type}
+Subject: ${subject}
+
+Message:
+${message}
+
+Ticket ID: ${support.id}`;
+      try {
+        await emailService.sendEmail(to, emailSubject, emailBody);
+      } catch (err) {
+        console.error('Support email send failed:', err.message);
+      }
+    }
+
+    res.status(201).json(support);
+  } catch (error) {
+    console.error('Support request error:', error);
+    res.status(500).json({ error: 'Failed to submit support request' });
+  }
+});
+
+router.get('/support', requireBusinessAdmin, async (req, res) => {
+  try {
+    try {
+      const items = await prisma.$queryRaw`
+        SELECT
+          "id",
+          "business_id" as "businessId",
+          "user_id" as "userId",
+          "type",
+          "subject",
+          "message",
+          "status",
+          "created_at" as "createdAt",
+          "updated_at" as "updatedAt"
+        FROM "support_requests"
+        WHERE "business_id" = ${req.user.businessId}
+        ORDER BY "created_at" DESC;
+      `;
+      res.json(items);
+    } catch (err) {
+      console.error('Support list failed:', err);
+      res.status(503).json({ error: 'Support system not initialized. Please apply DB schema changes and restart.' });
+    }
+  } catch (error) {
+    console.error('List support requests error:', error);
+    res.status(500).json({ error: 'Failed to fetch support requests' });
   }
 });
 

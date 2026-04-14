@@ -5,13 +5,15 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum UserRole {
   SUPER_ADMIN
   BUSINESS_ADMIN
+  BUSINESS_MEMBER
 }
 
 enum BusinessStatus {
@@ -20,7 +22,7 @@ enum BusinessStatus {
   CANCELLED
 }
 
-enum PatientSource {
+enum CustomerSource {
   MANUAL
   CSV
   QR
@@ -44,38 +46,92 @@ model Business {
   maxReminders           Int      @default(2) @map("max_reminders")
   logoUrl                String?  @map("logo_url")
   status                 BusinessStatus @default(ACTIVE)
+  
+  // SMS/Email Quotas
   smsMonthlyLimit        Int      @default(500) @map("sms_monthly_limit")
   smsUsedThisMonth       Int      @default(0) @map("sms_used_this_month")
+  emailMonthlyLimit      Int      @default(2000) @map("email_monthly_limit")
+  emailUsedThisMonth     Int      @default(0) @map("email_used_this_month")
+
   maxCsvRowsPerUpload    Int      @default(300) @map("max_csv_rows_per_upload")
   rateLimitPerMinute     Int      @default(20) @map("rate_limit_per_minute")
   createdAt              DateTime @default(now()) @map("created_at")
   updatedAt              DateTime @updatedAt @map("updated_at")
 
+  // Email Settings
+  emailEnabled           Boolean  @default(false) @map("email_enabled")
+  emailTemplate          String   @default("Hi {{name}}, thank you for visiting {{business_name}}! Please share your feedback: {{link}}") @map("email_template")
+  emailReminderTemplate   String   @default("Hi {{name}}, we noticed you haven't shared your feedback yet. It would mean a lot to us: {{link}}") @map("email_reminder_template")
+
+  // Referral Settings
+  referralEnabled        Boolean  @default(false) @map("referral_enabled")
+  referralOffer          String   @default("Get 10% off your next visit!") @map("referral_offer")
+  referralMessageTemplate String   @default("Thanks for the great review! {{offer}} Refer a friend here: {{link}}") @map("referral_message_template")
+
+  // AI Settings
+  autoReplyEnabled       Boolean  @default(false) @map("auto_reply_enabled")
+  autoReplyMinRating     Int      @default(1) @map("auto_reply_min_rating")
+
+  // AI Analytics
+  lastAiSummary          String?  @map("last_ai_summary") @db.Text
+  aiSummaryUpdatedAt     DateTime? @map("ai_summary_updated_at")
+
+  // Wall of Love settings
+  wallOfLoveEnabled      Boolean  @default(true) @map("wall_of_love_enabled")
+  wallOfLoveTitle        String   @default("What Our Customers Say") @map("wall_of_love_title")
+  wallOfLoveDescription  String?  @map("wall_of_love_description") @db.Text
+
+  // Notification settings
+  notifyOnNegativeReview Boolean  @default(true) @map("notify_on_negative_review")
+  negativeReviewThreshold Int      @default(3) @map("negative_review_threshold")
+  notificationEmails     String?  @map("notification_emails") // Comma-separated emails
+
+  // Business Page fields
+  tagline                String?  @map("tagline")
+  description            String?  @map("description") @db.Text
+  highlights             String?  @map("highlights") @db.Text
+  phone                  String?  @map("phone")
+  address                String?  @map("address")
+  mapsLink               String?  @map("maps_link")
+  heroBannerUrl          String?  @map("hero_banner_url")
+  primaryColor           String?  @default("#ec4899") @map("primary_color")
+
   users                  User[]
-  patients               Patient[]
+  customers              Customer[]
   smsLogs                SmsLog[]
+  supportRequests        SupportRequest[]
 
   @@map("businesses")
 }
 
 model User {
-  id           String   @id @default(uuid())
-  businessId   String?  @map("business_id")
-  email        String   @unique
-  passwordHash String   @map("password_hash")
-  role         UserRole
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                     String    @id @default(uuid())
+  email                  String    @unique
+  passwordHash           String?   @map("password_hash")
+  role                   UserRole  @default(BUSINESS_MEMBER)
+  businessId             String?   @map("business_id")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  business     Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  // Auth fields
+  passwordResetToken     String?   @unique @map("password_reset_token")
+  passwordResetExpires   DateTime? @map("password_reset_expires")
+  otpSecret              String?   @map("otp_secret")
+  otpEnabled             Boolean   @default(false) @map("otp_enabled")
+
+  business               Business? @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  auditLogs              AuditLog[]
+  supportRequests        SupportRequest[]
 
   @@map("users")
 }
 
-model Patient {
+model Customer {
   id            String         @id @default(uuid())
   businessId    String         @map("business_id")
   name          String
   phone         String?
+  email         String?
   visitDate     DateTime?      @map("visit_date")
   sendAt        DateTime?      @map("send_at")
   sentAt        DateTime?      @map("sent_at")
@@ -83,9 +139,11 @@ model Patient {
   submittedAt   DateTime?      @map("submitted_at")
   rating        Int?
   feedback      String?
+  aiReply       String?        @map("ai_reply")
   reminderCount Int            @default(0) @map("reminder_count")
-  source        PatientSource
+  source        CustomerSource  @default(MANUAL)
   createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
 
   business      Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   smsLogs       SmsLog[]
@@ -93,21 +151,52 @@ model Patient {
   @@index([businessId])
   @@index([sendAt])
   @@index([sentAt])
-  @@map("patients")
+  @@map("customers")
 }
 
 model SmsLog {
   id               String    @id @default(uuid())
   businessId       String    @map("business_id")
-  patientId        String    @map("patient_id")
+  customerId       String    @map("customer_id")
   status           SmsStatus
   providerResponse String?   @map("provider_response")
   createdAt        DateTime  @default(now()) @map("created_at")
 
   business         Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  patient          Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([businessId])
   @@index([createdAt])
   @@map("sms_logs")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String
+  userId    String?  @map("user_id")
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model SupportRequest {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  userId     String   @map("user_id")
+  type       String
+  subject    String
+  message    String   @db.Text
+  status     String   @default("OPEN")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([businessId])
+  @@index([status])
+  @@map("support_requests")
 }
