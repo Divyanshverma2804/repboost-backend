@@ -17,6 +17,7 @@ const optionalStr = (maxLen = 1000) =>
 const updateBusinessSettingsSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   reviewLink: z.string().url().optional(),
+  placeId: optionalStr(100),
   logoUrl: optionalUrl(),
 
   messageTemplate: z.string().max(1000).optional(),
