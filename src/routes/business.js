@@ -764,6 +764,161 @@ router.put('/settings', requireBusinessAdmin, async (req, res) => {
 });
 
 // --------------------
+// WhatsApp Template Management
+// --------------------
+
+// GET /api/business/whatsapp/templates - List all usable templates
+router.get('/whatsapp/templates', async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+
+    // Fetch global templates + approved custom templates for this business
+    const [globalTemplates, customTemplates] = await Promise.all([
+      prisma.whatsAppTemplate.findMany({
+        where: { isGlobal: true, status: 'APPROVED' }
+      }),
+      prisma.customTemplate.findMany({
+        where: { businessId, status: 'APPROVED' }
+      })
+    ]);
+
+    res.json({
+      global: globalTemplates,
+      custom: customTemplates
+    });
+  } catch (error) {
+    console.error('Fetch templates error:', error);
+    res.status(500).json({ error: 'Failed to fetch templates' });
+  }
+});
+
+// POST /api/business/whatsapp/custom-templates - Submit a new custom template
+router.post('/whatsapp/custom-templates', async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { name, category, body, buttonText } = req.body;
+
+    if (!name || !category || !body) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Safety Rules: Max 3 variables, URL at end
+    const variableCount = (body.match(/{{[0-9]+}}/g) || []).length;
+    if (variableCount > 3) {
+      return res.status(400).json({ error: 'Templates can have a maximum of 3 variables' });
+    }
+
+    const customTemplate = await prisma.customTemplate.create({
+      data: {
+        businessId,
+        name,
+        category,
+        body,
+        buttonText,
+        status: 'PENDING'
+      }
+    });
+
+    await auditLogService.log('CUSTOM_TEMPLATE_SUBMIT', req.user.id, { 
+      businessId, 
+      templateId: customTemplate.id 
+    });
+
+    res.status(201).json(customTemplate);
+  } catch (error) {
+    console.error('Submit custom template error:', error);
+    res.status(500).json({ error: 'Failed to submit template' });
+  }
+});
+
+// GET /api/business/whatsapp/custom-templates - List business's custom templates
+router.get('/whatsapp/custom-templates', async (req, res) => {
+  try {
+    const templates = await prisma.customTemplate.findMany({
+      where: { businessId: req.user.businessId },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(templates);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch custom templates' });
+  }
+});
+
+// GET /api/business/whatsapp/config - Get current template configuration
+router.get('/whatsapp/config', async (req, res) => {
+  try {
+    const config = await prisma.businessTemplateConfig.findUnique({
+      where: { businessId: req.user.businessId },
+      include: {
+        reviewRequestTemplate: true,
+        reminderTemplate: true,
+        thankYouTemplate: true,
+        negativeFeedbackTemplate: true
+      }
+    });
+    res.json(config || {});
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch config' });
+  }
+});
+
+// PUT /api/business/whatsapp/config - Update template selection
+router.put('/whatsapp/config', async (req, res) => {
+  try {
+    const businessId = req.user.businessId;
+    const { 
+      reviewRequestTemplateId, 
+      reminderTemplateId, 
+      thankYouTemplateId, 
+      negativeFeedbackTemplateId 
+    } = req.body;
+
+    // Verify ownership/existence if IDs are provided
+    const verifyTemplate = async (id) => {
+      if (!id) return true;
+      const [isGlobal, isCustom] = await Promise.all([
+        prisma.whatsAppTemplate.findFirst({ where: { id, isGlobal: true, status: 'APPROVED' } }),
+        prisma.customTemplate.findFirst({ where: { id, businessId, status: 'APPROVED' } })
+      ]);
+      return !!(isGlobal || isCustom);
+    };
+
+    const valid = await Promise.all([
+      verifyTemplate(reviewRequestTemplateId),
+      verifyTemplate(reminderTemplateId),
+      verifyTemplate(thankYouTemplateId),
+      verifyTemplate(negativeFeedbackTemplateId)
+    ]);
+
+    if (valid.includes(false)) {
+      return res.status(400).json({ error: 'One or more templates are invalid or not approved' });
+    }
+
+    const config = await prisma.businessTemplateConfig.upsert({
+      where: { businessId },
+      update: {
+        reviewRequestTemplateId,
+        reminderTemplateId,
+        thankYouTemplateId,
+        negativeFeedbackTemplateId
+      },
+      create: {
+        businessId,
+        reviewRequestTemplateId,
+        reminderTemplateId,
+        thankYouTemplateId,
+        negativeFeedbackTemplateId
+      }
+    });
+
+    res.json(config);
+  } catch (error) {
+    console.error('Update config error:', error);
+    res.status(500).json({ error: 'Failed to update configuration' });
+  }
+});
+
+// --------------------
 // Team Management Routes
 // --------------------
 

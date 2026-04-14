@@ -22,6 +22,19 @@ enum BusinessStatus {
   CANCELLED
 }
 
+enum TemplateStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TemplateCategory {
+  REVIEW_REQUEST
+  REMINDER
+  THANK_YOU_POSITIVE
+  NEGATIVE_FEEDBACK_ACK
+}
+
 enum CustomerSource {
   MANUAL
   CSV
@@ -95,13 +108,74 @@ model Business {
   mapsLink               String?  @map("maps_link")
   heroBannerUrl          String?  @map("hero_banner_url")
   primaryColor           String?  @default("#ec4899") @map("primary_color")
+  placeId                String?  @map("place_id")
 
   users                  User[]
   customers              Customer[]
   smsLogs                SmsLog[]
   supportRequests        SupportRequest[]
+  
+  // WhatsApp Template Config
+  templateConfig         BusinessTemplateConfig?
+  customTemplates        CustomTemplate[]
 
   @@map("businesses")
+}
+
+model WhatsAppTemplate {
+  id                 String           @id @default(uuid())
+  name               String           @unique
+  twilioTemplateSid  String?          @map("twilio_template_sid")
+  category           TemplateCategory
+  body               String           @db.Text
+  buttonText         String?          @map("button_text")
+  isGlobal           Boolean          @default(true) @map("is_global")
+  status             TemplateStatus   @default(APPROVED)
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  reviewRequestConfigs   BusinessTemplateConfig[] @relation("ReviewRequestTemplate")
+  reminderConfigs        BusinessTemplateConfig[] @relation("ReminderTemplate")
+  thankYouConfigs        BusinessTemplateConfig[] @relation("ThankYouTemplate")
+  negativeFeedbackConfigs BusinessTemplateConfig[] @relation("NegativeFeedbackTemplate")
+
+  @@map("whatsapp_templates")
+}
+
+model CustomTemplate {
+  id                 String           @id @default(uuid())
+  businessId         String           @map("business_id")
+  name               String
+  category           TemplateCategory
+  body               String           @db.Text
+  buttonText         String?          @map("button_text")
+  status             TemplateStatus   @default(PENDING)
+  twilioTemplateSid  String?          @map("twilio_template_sid")
+  rejectionReason    String?          @map("rejection_reason")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  updatedAt          DateTime         @updatedAt @map("updated_at")
+
+  business           Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("custom_templates")
+}
+
+model BusinessTemplateConfig {
+  id                         String   @id @default(uuid())
+  businessId                 String   @unique @map("business_id")
+  reviewRequestTemplateId    String?  @map("review_request_template_id")
+  reminderTemplateId         String?  @map("reminder_request_template_id")
+  thankYouTemplateId         String?  @map("thank_you_template_id")
+  negativeFeedbackTemplateId String?  @map("negative_feedback_template_id")
+
+  business                   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  
+  reviewRequestTemplate      WhatsAppTemplate? @relation("ReviewRequestTemplate", fields: [reviewRequestTemplateId], references: [id])
+  reminderTemplate           WhatsAppTemplate? @relation("ReminderTemplate", fields: [reminderTemplateId], references: [id])
+  thankYouTemplate           WhatsAppTemplate? @relation("ThankYouTemplate", fields: [thankYouTemplateId], references: [id])
+  negativeFeedbackTemplate   WhatsAppTemplate? @relation("NegativeFeedbackTemplate", fields: [negativeFeedbackTemplateId], references: [id])
+
+  @@map("business_template_configs")
 }
 
 model User {

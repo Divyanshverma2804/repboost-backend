@@ -208,7 +208,17 @@ class CommunicationService {
 
   async _processBusiness(business) {
     const freshBusiness = await prisma.business.findUnique({
-      where: { id: business.id }
+      where: { id: business.id },
+      include: {
+        templateConfig: {
+          include: {
+            reviewRequestTemplate: true,
+            reminderTemplate: true,
+            thankYouTemplate: true,
+            negativeFeedbackTemplate: true
+          }
+        }
+      }
     });
 
     const customers = await prisma.customer.findMany({
@@ -229,6 +239,7 @@ class CommunicationService {
       skippedInvalidPhone: 0,
       skippedBackoff: 0,
       skippedQuota: 0,
+      skippedNoTemplate: 0,
     };
 
     logger.info(
@@ -259,20 +270,35 @@ class CommunicationService {
           continue;
         }
 
+        const template = freshBusiness.templateConfig?.reviewRequestTemplate;
+        if (!template || !template.twilioTemplateSid) {
+          counters.skippedNoTemplate++;
+          logger.error(`[CRON] Communication: No approved WhatsApp template for business="${freshBusiness.name}"`);
+          // Fallback to old behavior? No, user requested strict template enforcement
+          continue;
+        }
+
         const link = `${process.env.APP_URL}/public/feedback/${customer.id}`;
-        const body = emailService.formatTemplate(freshBusiness.messageTemplate, {
-          name: customer.name,
-          business_name: freshBusiness.name,
-          link
-        });
+        
+        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Link
+        const variables = {
+          "1": customer.name,
+          "2": freshBusiness.name,
+          "3": link
+        };
 
         counters.attempted++;
-        const twilioResponse = await twilioService.sendWhatsApp(customer.phone, body);
+        const twilioResponse = await twilioService.sendWhatsAppTemplate(
+          customer.phone, 
+          template.twilioTemplateSid, 
+          variables
+        );
+
         if (twilioResponse.success) {
           await prisma.customer.update({ where: { id: customer.id }, data: { sentAt: new Date() } });
           await prisma.business.update({ where: { id: business.id }, data: { smsUsedThisMonth: { increment: 1 } } });
           await prisma.smsLog.create({
-            data: { businessId: business.id, customerId: customer.id, status: 'SENT', providerResponse: `whatsapp:${twilioResponse.sid || ''}`.trim() }
+            data: { businessId: business.id, customerId: customer.id, status: 'SENT', providerResponse: `whatsapp_tpl:${twilioResponse.sid || ''}`.trim() }
           });
           await this._maybeSendSmsQuotaWarning(business.id);
           counters.sent++;
@@ -287,7 +313,7 @@ class CommunicationService {
               providerResponse: String(twilioResponse.error || 'Unknown error')
             }
           });
-          logger.error(`[CRON] Communication: WhatsApp failed business="${freshBusiness.name}" customer=${customer.id} to=${customer.phone} error=${twilioResponse.error}`);
+          logger.error(`[CRON] Communication: WhatsApp Template failed business="${freshBusiness.name}" customer=${customer.id} to=${customer.phone} error=${twilioResponse.error}`);
         }
       }
 
@@ -335,7 +361,14 @@ class CommunicationService {
 
   async _processBusinessReminders(business) {
     const freshBusiness = await prisma.business.findUnique({
-      where: { id: business.id }
+      where: { id: business.id },
+      include: {
+        templateConfig: {
+          include: {
+            reminderTemplate: true
+          }
+        }
+      }
     });
 
     const reminderThreshold = new Date(Date.now() - freshBusiness.reminderDelayHours * 60 * 60 * 1000);
@@ -378,19 +411,32 @@ class CommunicationService {
           continue;
         }
 
-        const link = `${process.env.APP_URL}/public/feedback/${customer.id}`;
-        const body = emailService.formatTemplate(freshBusiness.reminderTemplate, {
-          name: customer.name,
-          business_name: freshBusiness.name,
-          link
-        });
+        const template = freshBusiness.templateConfig?.reminderTemplate;
+        if (!template || !template.twilioTemplateSid) {
+          logger.error(`[CRON] Reminder: No approved WhatsApp reminder template for business="${freshBusiness.name}"`);
+          continue;
+        }
 
-        const twilioResponse = await twilioService.sendWhatsApp(customer.phone, body);
+        const link = `${process.env.APP_URL}/public/feedback/${customer.id}`;
+        
+        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Link
+        const variables = {
+          "1": customer.name,
+          "2": freshBusiness.name,
+          "3": link
+        };
+
+        const twilioResponse = await twilioService.sendWhatsAppTemplate(
+          customer.phone, 
+          template.twilioTemplateSid, 
+          variables
+        );
+
         if (twilioResponse.success) {
           await prisma.customer.update({ where: { id: customer.id }, data: { reminderCount: { increment: 1 } } });
           await prisma.business.update({ where: { id: business.id }, data: { smsUsedThisMonth: { increment: 1 } } });
           await prisma.smsLog.create({
-            data: { businessId: business.id, customerId: customer.id, status: 'SENT', providerResponse: `reminder:whatsapp:${twilioResponse.sid || ''}`.trim() }
+            data: { businessId: business.id, customerId: customer.id, status: 'SENT', providerResponse: `reminder:whatsapp_tpl:${twilioResponse.sid || ''}`.trim() }
           });
           await this._maybeSendSmsQuotaWarning(business.id);
           continue; // Move to next customer
@@ -403,7 +449,7 @@ class CommunicationService {
               providerResponse: String(twilioResponse.error || 'Unknown error')
             }
           });
-          logger.error(`[CRON] Reminder: WhatsApp failed business="${freshBusiness.name}" customer=${customer.id} to=${customer.phone} error=${twilioResponse.error}`);
+          logger.error(`[CRON] Reminder: WhatsApp Template failed business="${freshBusiness.name}" customer=${customer.id} to=${customer.phone} error=${twilioResponse.error}`);
         }
       }
 

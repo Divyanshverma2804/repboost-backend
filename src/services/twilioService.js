@@ -58,11 +58,6 @@ class TwilioService {
       return { success: true, sid: 'mock_wa_' + Date.now(), status: 'sent' };
     }
 
-    // FIX: Removed dead WHATSAPP_DEV_OVERRIDE branch — if not in mock mode we
-    // are in production (constructor enforces this), so always send to the real
-    // recipient number. The old branch was unreachable because this.mock is set
-    // for every non-production environment, meaning we never reached the real
-    // Twilio call except in production.
     try {
       const result = await this.client.messages.create({
         body: message,
@@ -73,6 +68,34 @@ class TwilioService {
       return { success: true, sid: result.sid, status: result.status };
     } catch (error) {
       console.error('❌ Twilio WhatsApp error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Send a templated WhatsApp message using Twilio Content API
+   * @param {string} to - Recipient phone number
+   * @param {string} templateSid - Twilio Content Template SID (HX...)
+   * @param {Object} variables - Map of template variables { "1": "Name", "2": "Business" }
+   */
+  async sendWhatsAppTemplate(to, templateSid, variables) {
+    if (this.mock) {
+      console.log('📲 MOCK WHATSAPP TEMPLATE SENT');
+      console.log({ to, templateSid, variables });
+      return { success: true, sid: 'mock_wa_tpl_' + Date.now(), status: 'sent' };
+    }
+
+    try {
+      const result = await this.client.messages.create({
+        contentSid: templateSid,
+        contentVariables: JSON.stringify(variables),
+        from: `whatsapp:${this.fromNumber}`,
+        to: `whatsapp:${to}`
+      });
+
+      return { success: true, sid: result.sid, status: result.status };
+    } catch (error) {
+      console.error('❌ Twilio WhatsApp Template error:', error.message);
       return { success: false, error: error.message };
     }
   }

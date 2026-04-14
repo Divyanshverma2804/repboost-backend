@@ -99,14 +99,38 @@ router.get('/businesses', async (req, res) => {
 // POST /api/admin/businesses - Create a new business and invite owner
 router.post('/businesses', async (req, res) => {
   try {
-    const { name, slug, reviewLink, ownerEmail } = req.body;
+    let { name, slug, reviewLink, ownerEmail, placeId } = req.body;
 
-    if (!name || !slug || !reviewLink || !ownerEmail) {
+    if (!name || !slug || !ownerEmail) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Clean strings (remove accidental backticks and leading/trailing whitespace)
+    const cleanString = (str) => typeof str === 'string' ? str.replace(/[`]/g, '').trim() : str;
+    
+    name = cleanString(name);
+    slug = cleanString(slug);
+    reviewLink = cleanString(reviewLink);
+    ownerEmail = cleanString(ownerEmail);
+    placeId = cleanString(placeId);
+
+    // Auto-generate review link if placeId is provided but reviewLink is not
+    let finalReviewLink = reviewLink;
+    if (placeId && !finalReviewLink) {
+      finalReviewLink = `https://search.google.com/local/writereview?placeid=${placeId}`;
+    }
+
+    if (!finalReviewLink) {
+      return res.status(400).json({ error: 'Review link or Place ID is required' });
+    }
+
     const business = await prisma.business.create({
-      data: { name, slug, reviewLink },
+      data: { 
+        name, 
+        slug, 
+        reviewLink: finalReviewLink,
+        placeId 
+      },
     });
 
     const { resetToken } = await authService.initiateBusinessOnboarding(ownerEmail, business.id);
@@ -365,6 +389,60 @@ router.patch('/support-requests/:id', async (req, res) => {
   } catch (error) {
     console.error('Update support request error:', error);
     res.status(500).json({ error: 'Failed to update request' });
+  }
+});
+
+// --------------------
+// WhatsApp Template Management (Admin)
+// --------------------
+
+// GET /api/admin/whatsapp/pending - List all pending custom templates
+router.get('/whatsapp/pending', async (req, res) => {
+  try {
+    const templates = await prisma.customTemplate.findMany({
+      where: { status: 'PENDING' },
+      include: {
+        business: { select: { name: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(templates);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch pending templates' });
+  }
+});
+
+// PATCH /api/admin/whatsapp/templates/:id - Approve or Reject a custom template
+router.patch('/whatsapp/templates/:id', async (req, res) => {
+  try {
+    const { status, twilioTemplateSid, rejectionReason } = req.body;
+
+    if (!['APPROVED', 'REJECTED'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    if (status === 'APPROVED' && !twilioTemplateSid) {
+      return res.status(400).json({ error: 'Twilio Template SID is required for approval' });
+    }
+
+    const template = await prisma.customTemplate.update({
+      where: { id: req.params.id },
+      data: {
+        status,
+        twilioTemplateSid: status === 'APPROVED' ? twilioTemplateSid : null,
+        rejectionReason: status === 'REJECTED' ? rejectionReason : null
+      }
+    });
+
+    await auditLogService.log('CUSTOM_TEMPLATE_REVIEW', req.user.id, { 
+      templateId: template.id, 
+      status 
+    });
+
+    res.json(template);
+  } catch (error) {
+    console.error('Update template status error:', error);
+    res.status(500).json({ error: 'Failed to update template' });
   }
 });
 
