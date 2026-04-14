@@ -25,7 +25,12 @@ app.use('/static', express.static(path.join(__dirname, '../public')));
 
 // CORS configuration
 app.use(cors({
-  origin: [process.env.FRONTEND_URL || 'http://localhost:3000', 'https://Rewple.vercel.app'],
+  origin: [
+    'https://rewple.com',
+    'https://www.rewple.com',
+    'https://rewple.in',
+    'https://www.rewple.in',
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
