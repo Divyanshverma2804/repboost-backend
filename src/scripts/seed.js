@@ -43,7 +43,7 @@ async function seed() {
         name: 'rewple_review_request',
         twilioTemplateSid: 'HX83013900c5f1217f9be81a67055ea976',
         category: 'REVIEW_REQUEST',
-        body: 'Hi {{1}} 👋\n\nThis is *{{2}}*.\n\nWe’d love to hear about your recent experience.\n\nYour feedback helps us improve and serve you better.\n\nShare your experience here:',
+        body: 'Hi {{1}} 👋\n\nThis is *{{2}}*.\n\nWe\'d love to hear about your recent experience.\n\nYour feedback helps us improve and serve you better.\n\nShare your experience here:',
         buttonText: 'Leave Review',
         isGlobal: true,
         status: 'APPROVED'
@@ -52,7 +52,7 @@ async function seed() {
         name: 'rewple_review_reminder',
         twilioTemplateSid: 'HX34d45fdef28516a1e64ff881d52f0e1f',
         category: 'REMINDER',
-        body: 'Hi {{1}} 👋\n\nJust a quick reminder from *{{2}}*.\n\nWe’d really appreciate your feedback on your recent visit.\n\nYou can share it here:',
+        body: 'Hi {{1}} 👋\n\nJust a quick reminder from *{{2}}*.\n\nWe\'d really appreciate your feedback on your recent visit.\n\nYou can share it here:',
         buttonText: 'Leave Review',
         isGlobal: true,
         status: 'APPROVED'
@@ -69,7 +69,7 @@ async function seed() {
         name: 'negative_feedback_ack',
         twilioTemplateSid: null,
         category: 'NEGATIVE_FEEDBACK_ACK',
-        body: 'Hi {{1}},\n\nThank you for your feedback for *{{2}}*.\n\nWe’re sorry your experience wasn’t perfect. Your input helps us improve, and our team will look into this.\n\nWe appreciate your honesty.',
+        body: 'Hi {{1}},\n\nThank you for your feedback for *{{2}}*.\n\nWe\'re sorry your experience wasn\'t perfect. Your input helps us improve, and our team will look into this.\n\nWe appreciate your honesty.',
         isGlobal: true,
         status: 'APPROVED'
       }

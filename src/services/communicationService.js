@@ -280,11 +280,11 @@ class CommunicationService {
 
         const link = `${process.env.APP_URL}/public/feedback/${customer.id}`;
         
-        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Link
+        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Customer ID
         const variables = {
           "1": customer.name,
           "2": freshBusiness.name,
-          "3": link
+          "3": customer.id
         };
 
         counters.attempted++;
@@ -419,11 +419,11 @@ class CommunicationService {
 
         const link = `${process.env.APP_URL}/public/feedback/${customer.id}`;
         
-        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Link
+        // WhatsApp variables: {{1}} = Name, {{2}} = Business Name, {{3}} = Customer ID
         const variables = {
           "1": customer.name,
           "2": freshBusiness.name,
-          "3": link
+          "3": customer.id
         };
 
         const twilioResponse = await twilioService.sendWhatsAppTemplate(
